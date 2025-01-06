@@ -1,0 +1,14 @@
+phidata 
+python-dotenv
+yfinance
+packaging
+duckduckgo-search
+fastapi
+uvicorn
+groq
+openai
+openbb
+csv_tools
+newspaper4k
+lxml_html_clean
+duckdb
