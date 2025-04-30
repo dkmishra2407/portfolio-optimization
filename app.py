@@ -1,111 +1,200 @@
-import openai
-from phi.agent import Agent
-from phi.model.openai import OpenAIChat
-from phi.tools.yfinance import YFinanceTools
-from phi.tools.duckduckgo import DuckDuckGo
-from dotenv import load_dotenv
-from phi.tools.csv_tools import CsvTools
-from phi.tools.openbb_tools import OpenBBTools
-from phi.tools.newspaper4k import Newspaper4k
-from phi.model.groq import Groq
 import os
+import io
+import pandas as pd
+from typing import List, Dict
+from datetime import datetime
+import yfinance as yf
+from dotenv import load_dotenv
+from openai import OpenAI
+import numpy as np
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Set API keys
-openai.api_key = os.getenv("OPENAI_API_KEY")
-Groq.api_key = os.getenv("GROQ_API_KEY")
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Define the agents with appropriate roles and tools
-# 1. Agent to fetch real-time stock data using OpenBB
-real_time_agent = Agent(
-    name="Real-Time Stock Data Agent",
-    model=Groq(id="llama3-groq-70b-8192-tool-use-preview"),
-    role="Fetch real-time stock data from the portfolio",
-    tools=[OpenBBTools()],
-    instructions=[
-        "Fetch the real-time stock data for the portfolio items.",
-        "Provide data in an organized tabular format."
-    ],
-    show_tools_calls=True,
-    markdown=True,
-)
+class PortfolioData:
+    def __init__(self, date: str, ticker: str, open_price: float, high: float, low: float, close: float, volume: int):
+        self.date = datetime.strptime(date, '%Y-%m-%d')  # Parse date in correct format
+        self.ticker = ticker
+        self.open = open_price
+        self.high = high
+        self.low = low
+        self.close = close
+        self.volume = volume
 
-# 2. Agent to search the web for additional stock-related information
-web_search_agent = Agent(
-    name="Web Search Agent",
-    model=Groq(id="llama3-groq-70b-8192-tool-use-preview"),
-    role="Search the web for information related to stocks in the portfolio",
-    tools=[DuckDuckGo()],
-    instructions=[
-        "Search and gather relevant information about the stocks in the portfolio.",
-        "Always include credible sources for the information provided."
-    ],
-    show_tools_calls=True,
-    markdown=True,
-)
+class MarketAnalyzer:
+    def get_stock_data(self, ticker: str, start_date: datetime, end_date: datetime) -> Dict:
+        """Fetch stock data using yfinance"""
+        try:
+            stock = yf.Ticker(ticker)
+            hist = stock.history(
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d')
+            )
+            return {
+                "data": hist,
+                "info": stock.info
+            }
+        except Exception as e:
+            print(f"Error fetching data for {ticker}: {str(e)}")
+            return None
 
-# 3. Finance agent to retrieve stock fundamentals, price, and analyst recommendations
-finance_agent = Agent(
-    name="Finance Data Agent",
-    role="Retrieve stock fundamentals, prices, and analyst recommendations",
-    model=Groq(id="llama3-groq-70b-8192-tool-use-preview"),
-    tools=[
-        YFinanceTools(
-            stock_price=True,
-            analyst_recommendations=True,
-            stock_fundamentals=True,
-            company_news=False
-        ),
-        CsvTools(read_csvs=["portfolio.csv"])
-    ],
-    instructions=[
-        "Fetch stock fundamentals, current prices, and analyst recommendations for the portfolio.",
-        "Use tables to present the data in a clear and concise format."
-    ],
-    show_tools_calls=True,
-    markdown=True,
-)
+    def analyze_trends(self, data: pd.DataFrame) -> Dict:
+        """Analyze price trends and calculate technical indicators"""
+        try:
+            returns = data['Close'].pct_change().mean()
+            volatility = data['Close'].pct_change().std()
+            volume_trend = data['Volume'].mean()
+            price_trend = "Upward" if data['Close'].iloc[-1] > data['Close'].iloc[0] else "Downward"
+            
+            analysis = {
+                "returns": returns,
+                "volatility": volatility,
+                "volume_trend": volume_trend,
+                "price_trend": price_trend
+            }
+            return analysis
+        except Exception as e:
+            print(f"Error analyzing trends: {str(e)}")
+            return {
+                "returns": 0.0,
+                "volatility": 0.0,
+                "volume_trend": 0,
+                "price_trend": "Unknown"
+            }
 
-# 4. Agent to summarize news related to the stocks
-news_agent = Agent(
-    name="News Summarization Agent",
-    role="Summarize news articles related to the stocks in the portfolio",
-    model=Groq(id="llama3-groq-70b-8192-tool-use-preview"),
-    tools=[Newspaper4k()],
-    instructions=[
-        "Fetch and summarize recent news articles related to the stocks in the portfolio.",
-        "Ensure the summaries are concise and provide links to the original articles."
-    ],
-    show_tools_calls=True,
-    markdown=True,
-)
+class NewsAnalyzer:
+    def get_news(self, ticker: str) -> List[Dict]:
+        """Get news articles for a given ticker"""
+        try:
+            stock = yf.Ticker(ticker)
+            news = stock.news
+            return [{"title": n.get("title", ""), "summary": n.get("summary", "")} for n in news[:5]]
+        except Exception as e:
+            print(f"Error fetching news for {ticker}: {str(e)}")
+            return []
 
-# Define the multi-agent system
-portfolio_team = Agent(
-    team=[real_time_agent, web_search_agent, finance_agent, news_agent],
-    instructions=[
-        "Coordinate between agents to generate a comprehensive portfolio report.",
-        "Ensure the report includes real-time data, web insights, stock fundamentals, and news summaries."
-    ],
-    show_tools_calls=True,
-    markdown=True,
-)
+    def analyze_sentiment(self, text: str) -> Dict:
+        """Analyze sentiment using OpenAI's updated API"""
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "Analyze the sentiment of this text and respond with only a number between -1 (very negative) and 1 (very positive)."},
+                    {"role": "user", "content": text}
+                ]
+            )
+            sentiment_score = float(response.choices[0].message.content.strip())
+            return {"sentiment": sentiment_score}
+        except Exception as e:
+            print(f"Error analyzing sentiment: {str(e)}")
+            return {"sentiment": 0.0}
 
-# Generate the portfolio report
-portfolio_team.print_response(
-    ''' 
-    date	tic	open	high	low	close	volume
-01-02-2013	DOW	13104.2998	13412.70996	13104.2998	13412.5498	161430000
-01-03-2013	DOW	13413.00977	13430.59961	13358.2998	13391.36035	129630000
-01-04-2013	DOW	13391.0498	13447.11035	13376.23047	13435.20996	107590000
-01-07-2013	DOW	13436.12988	13436.12988	13343.32031	13384.29004	113120000
-01-08-2013	DOW	13377.41992	13377.41992	13293.12988	13328.84961	129570000
+class PortfolioAnalyzer:
+    def __init__(self):
+        self.market_analyzer = MarketAnalyzer()
+        self.news_analyzer = NewsAnalyzer()
 
-SUMMERIZE THE ABOVE PORTFOLIO DATA USING ALL THE AGENTS
-''',
-    stream=True
-)
+    def load_portfolio_data(self, data: str) -> List[PortfolioData]:
+        """Parse and load portfolio data from string input"""
+        try:
+            df = pd.read_csv(io.StringIO(data), sep='\t')
+            return [
+                PortfolioData(
+                    date=row['date'],
+                    ticker=row['tic'],
+                    open_price=float(row['open']),
+                    high=float(row['high']),
+                    low=float(row['low']),
+                    close=float(row['close']),
+                    volume=int(row['volume'])
+                )
+                for _, row in df.iterrows()
+            ]
+        except Exception as e:
+            print(f"Error loading portfolio data: {str(e)}")
+            return []
 
+    def analyze_portfolio(self, portfolio_data: List[PortfolioData]) -> Dict:
+        results = {
+            "market_analysis": {},
+            "news_analysis": {}
+        }
 
+        for entry in portfolio_data:
+            market_data = self.market_analyzer.get_stock_data(
+                entry.ticker,
+                entry.date,
+                datetime.now()
+            )
+            
+            if market_data:
+                results["market_analysis"][entry.ticker] = (
+                    self.market_analyzer.analyze_trends(market_data["data"])
+                )
+            
+            news = self.news_analyzer.get_news(entry.ticker)
+            if news:
+                sentiments = [
+                    self.news_analyzer.analyze_sentiment(article["title"])["sentiment"]
+                    for article in news if article["title"]
+                ]
+                results["news_analysis"][entry.ticker] = {
+                    "articles": news,
+                    "sentiment": np.mean(sentiments) if sentiments else 0.0
+                }
+
+        return results
+
+    def generate_report(self, analysis_results: Dict) -> str:
+        report = f"""
+# Portfolio Analysis Report
+Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+## Market Analysis
+"""
+        for ticker, analysis in analysis_results["market_analysis"].items():
+            report += f"""
+### {ticker}
+- Returns: {analysis['returns']:.2%}
+- Volatility: {analysis['volatility']:.2%}
+- Volume Trend: {analysis['volume_trend']:,.0f}
+- Price Trend: {analysis['price_trend']}
+"""
+
+        report += "\n## News Analysis\n"
+        for ticker, news in analysis_results["news_analysis"].items():
+            report += f"""
+### {ticker}
+- Overall Sentiment: {news['sentiment']:.2f}
+- Recent Headlines:
+"""
+            for article in news["articles"]:
+                if article["title"]:
+                    report += f"  - {article['title']}\n"
+
+        return report
+
+def main():
+    try:
+        with open('portfolio.csv', 'r') as f:
+            portfolio_data = f.read()
+    except FileNotFoundError:
+        print("Please run the data generator script first to create portfolio.csv")
+        return
+
+    analyzer = PortfolioAnalyzer()
+    portfolio_entries = analyzer.load_portfolio_data(portfolio_data)
+    
+    if not portfolio_entries:
+        print("No portfolio data could be loaded.")
+        return
+        
+    analysis_results = analyzer.analyze_portfolio(portfolio_entries)
+    report = analyzer.generate_report(analysis_results)
+    print(report)
+
+if __name__ == "__main__":
+    main()
